@@ -42,7 +42,7 @@ func main() {
 
 	http.HandleFunc("/generate", handleGenerate)
 	http.HandleFunc("/multipart/initiate", handleInitiateMultipart)
-	http.HandleFunc("/multipart/url", handlePresignPart)
+	http.HandleFunc("/multipart/presigned", handlePresignPart)
 	http.HandleFunc("/multipart/complete", handleCompleteMultipart)
 
 	log.Println("Server running on :8080")
