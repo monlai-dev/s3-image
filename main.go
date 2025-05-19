@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"log"
 	"net/http"
 	"os"
@@ -13,8 +12,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials" // ✅ Correct path
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 var s3Client *s3.Client
@@ -22,6 +22,14 @@ var bucket string
 var region string
 
 func main() {
+	// Load environment variables first
+	region = getEnv("AWS_REGION", "")
+	bucket = getEnv("AWS_BUCKET_NAME", "")
+
+	if region == "" || bucket == "" {
+		log.Fatal("AWS_REGION and AWS_BUCKET_NAME must be set")
+	}
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(region),
 		config.WithCredentialsProvider(
@@ -37,8 +45,6 @@ func main() {
 	}
 
 	s3Client = s3.NewFromConfig(cfg)
-	bucket = getEnv("AWS_BUCKET_NAME", bucket)
-	region = getEnv("AWS_REGION", region)
 
 	http.HandleFunc("/generate", handleGenerate)
 	http.HandleFunc("/multipart/initiate", handleInitiateMultipart)
@@ -63,7 +69,8 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}, s3.WithPresignExpires(15*time.Minute))
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error generating presigned URL: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to generate presigned URL: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -78,9 +85,10 @@ func getEnv(key, fallback string) string {
 }
 
 func handleInitiateMultipart(w http.ResponseWriter, r *http.Request) {
-	filename := r.URL.Query().Get("filename")
+	// Expect "key" parameter to match the frontend
+	filename := r.URL.Query().Get("key")
 	if filename == "" {
-		http.Error(w, "Missing filename", http.StatusBadRequest)
+		http.Error(w, "Missing key parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -91,25 +99,31 @@ func handleInitiateMultipart(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s3Client.CreateMultipartUpload(context.TODO(), input)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error initiating multipart upload: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to initiate multipart upload: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"uploadId": *resp.UploadId,
 		"key":      *resp.Key,
 	})
 }
 
-// Step 2: Generate pre-signed URL for part upload
 func handlePresignPart(w http.ResponseWriter, r *http.Request) {
 	filename := r.URL.Query().Get("filename")
 	uploadId := r.URL.Query().Get("uploadId")
 	partNumStr := r.URL.Query().Get("partNumber")
-	partNumber, _ := strconv.Atoi(partNumStr)
 
-	if filename == "" || uploadId == "" || partNumber == 0 {
-		http.Error(w, "Missing required parameters", http.StatusBadRequest)
+	if filename == "" || uploadId == "" || partNumStr == "" {
+		http.Error(w, "Missing required parameters (filename, uploadId, partNumber)", http.StatusBadRequest)
+		return
+	}
+
+	partNumber, err := strconv.Atoi(partNumStr)
+	if err != nil {
+		http.Error(w, "Invalid partNumber", http.StatusBadRequest)
 		return
 	}
 
@@ -122,18 +136,18 @@ func handlePresignPart(w http.ResponseWriter, r *http.Request) {
 	}, s3.WithPresignExpires(15*time.Minute))
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error generating presigned part URL: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to generate presigned part URL: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"url": req.URL,
 	})
 }
 
-// Step 3: Complete multipart upload
 func handleCompleteMultipart(w http.ResponseWriter, r *http.Request) {
-	// Define a custom part structure for JSON unmarshaling
 	var payload struct {
 		Key      string `json:"key"`
 		UploadId string `json:"uploadId"`
@@ -144,11 +158,15 @@ func handleCompleteMultipart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Convert the received parts to s3.CompletedPart format
+	if payload.Key == "" || payload.UploadId == "" || len(payload.Parts) == 0 {
+		http.Error(w, "Missing required fields (key, uploadId, parts)", http.StatusBadRequest)
+		return
+	}
+
 	completedParts := make([]types.CompletedPart, len(payload.Parts))
 	for i, part := range payload.Parts {
 		completedParts[i] = types.CompletedPart{
@@ -166,9 +184,11 @@ func handleCompleteMultipart(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Error completing multipart upload: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to complete multipart upload: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Upload completed"))
 }
