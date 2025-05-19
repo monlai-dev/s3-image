@@ -32,7 +32,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to load SDK config, %v", err)
 	}
+
 	s3Client = s3.NewFromConfig(cfg)
+	bucket = getEnv("AWS_BUCKET_NAME", bucket)
+	region = getEnv("AWS_REGION", region)
 
 	http.HandleFunc("/generate", handleGenerate)
 	log.Println("Server running on :8080")
