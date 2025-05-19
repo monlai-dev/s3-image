@@ -15,8 +15,8 @@ import (
 )
 
 var s3Client *s3.Client
-var bucket = "your-bucket-name"
-var region = "ap-southeast-1"
+var bucket string
+var region string
 
 func main() {
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
