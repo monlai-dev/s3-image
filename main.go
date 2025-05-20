@@ -188,7 +188,7 @@ func handleCompleteMultipart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to complete multipart upload: %v", err), http.StatusInternalServerError)
 		return
 	}
-
+	// Set the content type to JSON
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Upload completed"))
 }
